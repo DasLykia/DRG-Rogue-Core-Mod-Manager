@@ -2,7 +2,7 @@
 #   .\release.ps1 0.2.0
 # Needs: Rust (GNU toolchain), vpk (dotnet tool install -g vpk), GitHub CLI logged in (gh auth login).
 param([Parameter(Mandatory = $true)][string]$Version)
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'  # native tools write progress to stderr; failures are checked via $LASTEXITCODE
 Set-Location $PSScriptRoot
 $repo = 'https://github.com/DasLykia/DPG-Rogue-Core-Mod-Manager'
 $token = gh auth token
@@ -14,8 +14,8 @@ git diff --cached --quiet
 if ($LASTEXITCODE) { git commit -m "Prepare release v$Version" }
 
 # First run: create the public repo "DPG-Rogue-Core-Mod-Manager" and upload the code.
-git remote get-url origin 2>$null | Out-Null
-if ($LASTEXITCODE) {
+$remotes = @(git remote)
+if ($remotes -notcontains 'origin') {
     gh repo create DasLykia/DPG-Rogue-Core-Mod-Manager --public --description 'DPG: Rogue Core Mod Manager - mod manager for Deep Rock Galactic: Rogue Core (Nexus Mods), with Velopack auto-updates' --source . --remote origin --push
     if ($LASTEXITCODE) { throw 'creating the GitHub repo failed' }
 }
