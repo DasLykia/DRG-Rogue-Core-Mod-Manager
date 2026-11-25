@@ -793,7 +793,7 @@ impl App {
                             match self.lib.suspend_all() {
                                 Ok(()) => {
                                     library::launch_game();
-                                    self.toast(t("Spiel startet ohne Mods. \"Mit Mods starten\" schaltet sie wieder ein.", "Starting the game without mods. \"Launch modded\" turns them back on."), false);
+                                    self.toast(t("Spiel startet ohne Mods (auch ohne UE4SS-Mods). \"Mit Mods starten\" schaltet sie wieder ein.", "Starting the game without mods (UE4SS mods too). \"Launch modded\" turns them back on."), false);
                                 }
                                 Err(e) => self.toast(e, true),
                             }
@@ -820,6 +820,11 @@ impl App {
                         if let Some(v) = self.game_version_text() {
                             ui.separator();
                             ui.label(RichText::new(v).small().color(pal().muted_fg));
+                        }
+                        if let Some(on) = self.lib.ue4ss_state() {
+                            ui.separator();
+                            let (txt, col) = if on { (t("UE4SS aktiv", "UE4SS on"), pal().muted_fg) } else { (t("UE4SS pausiert", "UE4SS paused"), pal().secondary_fg) };
+                            ui.label(RichText::new(txt).small().color(col));
                         }
                         if self.lib.settings.vanilla_active {
                             ui.separator();

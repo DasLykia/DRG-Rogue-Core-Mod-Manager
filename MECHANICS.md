@@ -41,4 +41,5 @@ Sidebar groups "Allgemein" (Downloads, Einstellungen) and "Mods" (Meine Mods, Mo
 | "Neu" label | created less than 7 days ago | design choice |
 | Bug/comment counts | not available: GraphQL has no such fields, nexusmods.com answers 403 to the app | checked 2026-11-25 |
 | Export file | .zip with `modpack.json` (the library entries) + `files/<mod key>/<file>` | design choice |
+| UE4SS on/off | vanilla launch renames `Binaries\Win64\dwmapi.dll` / `xinput1_3.dll` to `*.disabled` (only when `UE4SS.dll` is in `Win64` or `Win64\ue4ss`); modded launch renames back | game folder: UE4SS loads via dwmapi.dll, mods use `enabled.txt` / `mods.txt` |
 | Second start | hands nxm link to the open window via 127.0.0.1:47813 | design choice (original uses Tauri single-instance) |

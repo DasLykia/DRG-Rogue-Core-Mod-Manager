@@ -6,6 +6,12 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $repo = 'https://github.com/DasLykia/DPG-Rogue-Core-Mod-Manager'
 $token = gh auth token
+if (-not $token) { throw 'GitHub CLI is not logged in (run: gh auth login)' }
+
+# Commit any local changes (new files like assets\app.ico) before publishing.
+git add -A
+git diff --cached --quiet
+if ($LASTEXITCODE) { git commit -m "Prepare release v$Version" }
 
 # First run: create the public repo "DPG-Rogue-Core-Mod-Manager" and upload the code.
 git remote get-url origin 2>$null | Out-Null
@@ -26,7 +32,7 @@ Copy-Item target\release\core-mod-manager.exe publish\
 if (Test-Path Releases) { Remove-Item Releases -Recurse -Force }
 # The previous release lets vpk make a small delta update (fails harmlessly for the first release).
 vpk download github --repoUrl $repo --token $token
-vpk pack --packId DPG.RogueCoreModManager --packVersion $Version --packDir publish --mainExe core-mod-manager.exe --packTitle 'DPG Rogue Core Mod Manager' --packAuthors DasLykia --icon "$env:TEMP\cmm-icon-build\app.ico"
+vpk pack --packId DPG.RogueCoreModManager --packVersion $Version --packDir publish --mainExe core-mod-manager.exe --packTitle 'DPG Rogue Core Mod Manager' --packAuthors DasLykia --icon "$PSScriptRoot\assets\app.ico"
 if ($LASTEXITCODE) { throw 'vpk pack failed' }
 vpk upload github --repoUrl $repo --token $token --publish --releaseName "v$Version" --tag "v$Version"
 if ($LASTEXITCODE) { throw 'vpk upload failed' }

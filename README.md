@@ -22,7 +22,7 @@ Ein eigener Mod-Manager im Stil des Deadlock Mod Managers (dunkles Design, Seite
 - **Herunterladen**: mit Nexus Premium direkt in der App. Ohne Premium öffnet der Knopf die Datei auf Nexus; dort "Mod Manager Download" klicken, dann lädt und installiert die App die Datei (dafür einmal in den Einstellungen "Als Nexus-Download-Programm eintragen"). Für beides braucht man den persönlichen API-Schlüssel von Nexus (Einstellungen → "Schlüssel holen").
 - **Mods hinzufügen**: .zip oder .pak per Klick oder Ziehen & Ablegen.
 - **Downloads**: Fortschritt und Ergebnis jedes Downloads.
-- **Oben**: "Ohne Mods starten" schaltet alle Mods kurz aus und startet das Spiel über Steam; "Mit Mods starten" schaltet die gewählten wieder ein und startet.
+- **Oben**: "Ohne Mods starten" schaltet alle Mods kurz aus und startet das Spiel über Steam; "Mit Mods starten" schaltet die gewählten wieder ein und startet. Ist UE4SS installiert, wird dabei auch UE4SS selbst aus- bzw. eingeschaltet (sein Lader `dwmapi.dll` bzw. `xinput1_3.dll` in `RogueCore\Binaries\Win64` bekommt die Endung `.disabled`) – damit laufen auch keine UE4SS-Mods wie NegotiationMoreChoices. Der Zustand steht unten in der Statusleiste ("UE4SS aktiv/pausiert").
 
 ## Wie Mods installiert werden
 

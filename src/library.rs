@@ -92,6 +92,38 @@ impl Library {
         p.is_dir().then_some(p)
     }
 
+    /// UE4SS's loader DLLs next to the game's exe (on or switched off), when UE4SS is installed.
+    /// UE4SS starts every UE4SS mod (Lua, C++ and the BP mod loader) through one of these.
+    fn ue4ss_loaders(&self) -> Vec<PathBuf> {
+        let win64 = Path::new(&self.settings.game_dir).join("RogueCore").join("Binaries").join("Win64");
+        if self.settings.game_dir.is_empty() || !(win64.join("UE4SS.dll").is_file() || win64.join("ue4ss").join("UE4SS.dll").is_file()) {
+            return Vec::new();
+        }
+        ["dwmapi.dll", "xinput1_3.dll"]
+            .iter()
+            .map(|n| win64.join(n))
+            .filter(|p| p.is_file() || PathBuf::from(format!("{}{OFF}", p.display())).is_file())
+            .collect()
+    }
+
+    /// Some(true): UE4SS mods run; Some(false): switched off for a vanilla launch; None: no UE4SS.
+    pub fn ue4ss_state(&self) -> Option<bool> {
+        let loaders = self.ue4ss_loaders();
+        (!loaders.is_empty()).then(|| loaders.iter().any(|p| p.is_file()))
+    }
+
+    /// Switches all UE4SS mods on or off by renaming UE4SS's loader DLL.
+    fn set_ue4ss(&self, on: bool) -> Result<(), String> {
+        for p in self.ue4ss_loaders() {
+            let off = PathBuf::from(format!("{}{OFF}", p.display()));
+            let (from, to) = if on { (off, p) } else { (p, off) };
+            if from.is_file() && !to.exists() {
+                fs::rename(&from, &to).map_err(|e| crate::tf!("UE4SS konnte nicht umgeschaltet werden ({}): {} – läuft das Spiel noch?", "Couldn't switch UE4SS ({}): {} – is the game still running?", to.display(), e))?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn store_dir(&self) -> PathBuf {
         self.data_dir.join("mods")
     }
@@ -203,6 +235,7 @@ impl Library {
         for m in &self.mods {
             self.place(m, false)?;
         }
+        self.set_ue4ss(false)?;
         self.settings.vanilla_active = true;
         self.save();
         Ok(())
@@ -213,6 +246,7 @@ impl Library {
         for m in &self.mods {
             self.place(m, m.enabled)?;
         }
+        self.set_ue4ss(true)?;
         self.settings.vanilla_active = false;
         self.save();
         Ok(())
@@ -529,6 +563,17 @@ mod tests {
         let m = lib.mods.iter().find(|m| m.key == k).unwrap();
         assert_eq!((m.name.as_str(), m.enabled), ("Nice Mod", false));
         assert!(paks.join("New_P.pak.disabled").exists());
+        // "Ohne Mods starten" also switches UE4SS (and so every UE4SS mod) off, and back on.
+        let win64 = root.join("game").join("RogueCore").join("Binaries").join("Win64");
+        fs::create_dir_all(&win64).unwrap();
+        fs::write(win64.join("UE4SS.dll"), b"u").unwrap();
+        fs::write(win64.join("dwmapi.dll"), b"d").unwrap();
+        assert_eq!(lib.ue4ss_state(), Some(true));
+        lib.suspend_all().unwrap();
+        assert!(win64.join("dwmapi.dll.disabled").exists() && !win64.join("dwmapi.dll").exists());
+        assert_eq!(lib.ue4ss_state(), Some(false));
+        lib.apply_all().unwrap();
+        assert!(win64.join("dwmapi.dll").exists() && !win64.join("dwmapi.dll.disabled").exists());
         let _ = fs::remove_dir_all(root);
     }
 }
