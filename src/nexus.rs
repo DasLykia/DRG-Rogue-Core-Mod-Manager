@@ -145,12 +145,40 @@ pub fn fetch_files(mod_ids: &[u32]) -> Result<std::collections::HashMap<u32, Vec
     Ok(out)
 }
 
-/// Whether a file that appeared in the Downloads folder is Nexus file `uri` of mod `mod_id`.
+/// Nexus's manual-download names: "<file name> <mod id> <version> <YYYY-MM-DDTHH-MMZ> <code>.zip"
+/// (e.g. "EventsProgressHUD V2 EN and CN 121 2 2026-11-21T07-15Z S2Mnoz5wy.zip") -> (file name, mod id).
+pub fn parse_download_name(file_name: &str) -> Option<(String, u32)> {
+    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+    let stem = match stem.rfind(" (") {
+        Some(i) if stem.ends_with(')') => &stem[..i],
+        _ => stem,
+    };
+    let tokens: Vec<&str> = stem.split(' ').filter(|t| !t.is_empty()).collect();
+    let n = tokens.len();
+    if n < 5 {
+        return None;
+    }
+    let date = tokens[n - 2];
+    let dated = date.len() >= 16 && date.as_bytes()[..4].iter().all(u8::is_ascii_digit) && date.contains('T') && date.ends_with('Z');
+    if !dated {
+        return None;
+    }
+    Some((tokens[..n - 4].join(" "), tokens[n - 4].parse().ok()?))
+}
+
+fn letters(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+}
+
+/// Whether a file that appeared in the Downloads folder is Nexus file `uri` (named `title`) of mod `mod_id`.
 /// Browsers add " (1)" to repeated downloads; unfinished downloads are never a match.
-pub fn is_nexus_download(file_name: &str, uri: &str, mod_id: u32) -> bool {
+pub fn is_nexus_download(file_name: &str, uri: &str, title: &str, mod_id: u32) -> bool {
     let lower = file_name.to_lowercase();
     if [".crdownload", ".part", ".tmp", ".download", ".partial"].iter().any(|x| lower.ends_with(x)) {
         return false;
+    }
+    if let Some((name, id)) = parse_download_name(file_name) {
+        return id == mod_id && (title.is_empty() || letters(&name) == letters(title));
     }
     let base = |n: &str| -> String {
         let n = n.to_lowercase();
@@ -487,11 +515,19 @@ mod tests {
         assert!(parse_nxm("nxm://skyrim/mods/4/files/53").is_none());
         assert_eq!(wiki_url("Rogue Core:\"Decker\" SMG"), "https://deeprockgalactic.wiki.gg/wiki/Rogue_Core:%22Decker%22_SMG");
         assert_eq!(patch_name("PATCH NOTES - RC: EA:03:04:00").as_deref(), Some("EA 03.04.00"));
-        assert!(is_nexus_download("DeepRockTimer45-4-1-1780011301.zip", "DeepRockTimer45-4-1-1780011301.zip", 4));
-        assert!(is_nexus_download("DeepRockTimer45-4-1-1780011301 (1).zip", "DeepRockTimer45-4-1-1780011301.zip", 4));
-        assert!(!is_nexus_download("DeepRockTimer75-4-1-1780011316.zip", "DeepRockTimer45-4-1-1780011301.zip", 4));
-        assert!(!is_nexus_download("DeepRockTimer45-4-1-1780011301.zip.crdownload", "", 4));
-        assert!(is_nexus_download("Something-4-1-1.zip", "", 4));
+        assert!(is_nexus_download("DeepRockTimer45-4-1-1780011301.zip", "DeepRockTimer45-4-1-1780011301.zip", "", 4));
+        assert!(is_nexus_download("DeepRockTimer45-4-1-1780011301 (1).zip", "DeepRockTimer45-4-1-1780011301.zip", "", 4));
+        assert!(!is_nexus_download("DeepRockTimer75-4-1-1780011316.zip", "DeepRockTimer45-4-1-1780011301.zip", "", 4));
+        assert!(!is_nexus_download("DeepRockTimer45-4-1-1780011301.zip.crdownload", "", "", 4));
+        assert!(is_nexus_download("Something-4-1-1.zip", "", "", 4));
+        // Nexus's newer manual-download names.
+        let n = "EventsProgressHUD V2 EN and CN 121 2 2026-11-21T07-15Z S2Mnoz5wy.zip";
+        assert_eq!(parse_download_name(n), Some(("EventsProgressHUD V2 EN and CN".to_string(), 121)));
+        assert_eq!(parse_download_name("Heat Crosshair 1.0.0 131 1.0.0 2026-10-05T19-35Z IYnqlcQwI (1).zip"), Some(("Heat Crosshair 1.0.0".to_string(), 131)));
+        assert!(is_nexus_download(n, "EventsProgressHUD-121-2-1763709300.zip", "EventsProgressHUD V2 EN and CN", 121));
+        assert!(!is_nexus_download(n, "", "Something else", 121));
+        assert!(!is_nexus_download(n, "", "", 122));
+        assert!(!is_nexus_download(&format!("{n}.crdownload"), "", "", 121));
         // Update detection.
         assert_eq!(version_in_name("WorkbenchFullControlV2.3_P.pak").as_deref(), Some("2.3"));
         assert_eq!(version_in_name("HeatCrosshair-1.0.0_P.pak").as_deref(), Some("1.0.0"));

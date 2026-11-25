@@ -11,6 +11,8 @@ pub const STEAM_APP_ID: u32 = 2605790;
 pub const GAME_DIR_NAME: &str = "Deep Rock Galactic RogueCore";
 const MOD_EXTS: [&str; 4] = ["pak", "utoc", "ucas", "sig"];
 const OFF: &str = ".disabled";
+/// A switched-off UE4SS mod keeps its enabled.txt under this name.
+const UE4SS_OFF: &str = "enabled.txt.disabled";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct InstalledMod {
@@ -27,6 +29,9 @@ pub struct InstalledMod {
     pub enabled: bool,
     pub installed_at: u64,
     pub order: u32,
+    /// For a UE4SS mod: its folder name in UE4SS's Mods folder ("" for .pak mods).
+    #[serde(default)]
+    pub ue4ss: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -106,6 +111,27 @@ impl Library {
             .collect()
     }
 
+    /// UE4SS's Mods folders (Win64\ue4ss\Mods for UE4SS 3, Win64\Mods for older ones),
+    /// the one whose UE4SS.log was written last first: that's the one UE4SS used last.
+    fn ue4ss_dirs(&self) -> Vec<PathBuf> {
+        if self.settings.game_dir.is_empty() {
+            return Vec::new();
+        }
+        let win64 = Path::new(&self.settings.game_dir).join("RogueCore").join("Binaries").join("Win64");
+        let mut dirs: Vec<(PathBuf, std::time::SystemTime)> = [win64.join("ue4ss"), win64.clone()]
+            .into_iter()
+            .filter(|d| d.join("Mods").is_dir())
+            .map(|d| (d.join("Mods"), fs::metadata(d.join("UE4SS.log")).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)))
+            .collect();
+        dirs.sort_by(|a, b| b.1.cmp(&a.1));
+        dirs.into_iter().map(|(d, _)| d).collect()
+    }
+
+    /// Where new UE4SS mods go.
+    pub fn ue4ss_mods_dir(&self) -> Option<PathBuf> {
+        self.ue4ss_dirs().into_iter().next()
+    }
+
     /// Some(true): UE4SS mods run; Some(false): switched off for a vanilla launch; None: no UE4SS.
     pub fn ue4ss_state(&self) -> Option<bool> {
         let loaders = self.ue4ss_loaders();
@@ -176,11 +202,49 @@ impl Library {
                 ..Default::default()
             });
         }
+        // UE4SS mods people added themselves: a folder with enabled.txt that UE4SS's own mods.txt doesn't list.
+        let udirs = self.ue4ss_dirs();
+        for d in &udirs {
+            let listed: Vec<String> = fs::read_to_string(d.join("mods.txt")).unwrap_or_default().lines().filter_map(|l| l.split(':').next()).map(|s| s.trim().to_lowercase()).collect();
+            let Ok(rd) = fs::read_dir(d) else { continue };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let on = e.path().join("enabled.txt").is_file();
+                if !e.path().is_dir() || name.eq_ignore_ascii_case("shared") || listed.contains(&name.to_lowercase()) || !(on || e.path().join(UE4SS_OFF).is_file()) {
+                    continue;
+                }
+                if self.mods.iter().any(|m| m.ue4ss.eq_ignore_ascii_case(&name)) {
+                    continue;
+                }
+                let order = self.next_order();
+                self.mods.push(InstalledMod {
+                    key: format!("ue4ss-{}", name.to_lowercase()),
+                    name: pretty_name(&name),
+                    author: "Lokal gefunden".into(),
+                    category: "UE4SS".into(),
+                    ue4ss: name,
+                    enabled: on,
+                    installed_at: now(),
+                    order,
+                    ..Default::default()
+                });
+            }
+        }
         let vanilla = self.settings.vanilla_active;
-        self.mods.retain(|m| m.files.iter().any(|f| paks.join(f).exists() || paks.join(format!("{f}{OFF}")).exists()));
+        self.mods.retain(|m| {
+            if m.ue4ss.is_empty() {
+                m.files.iter().any(|f| paks.join(f).exists() || paks.join(format!("{f}{OFF}")).exists())
+            } else {
+                udirs.iter().any(|d| d.join(&m.ue4ss).is_dir())
+            }
+        });
         if !vanilla {
             for m in &mut self.mods {
-                m.enabled = m.files.iter().any(|f| f.to_ascii_lowercase().ends_with(".pak") && paks.join(f).exists());
+                m.enabled = if m.ue4ss.is_empty() {
+                    m.files.iter().any(|f| f.to_ascii_lowercase().ends_with(".pak") && paks.join(f).exists())
+                } else {
+                    udirs.iter().any(|d| d.join(&m.ue4ss).join("enabled.txt").is_file())
+                };
             }
         }
         self.save();
@@ -192,6 +256,27 @@ impl Library {
 
     /// Puts each file of a mod in the on or off state on disk.
     fn place(&self, m: &InstalledMod, on: bool) -> Result<(), String> {
+        // UE4SS starts a mod only when its folder has enabled.txt.
+        if !m.ue4ss.is_empty() {
+            for d in self.ue4ss_dirs() {
+                let dir = d.join(&m.ue4ss);
+                let (a, b) = (dir.join("enabled.txt"), dir.join(UE4SS_OFF));
+                if !dir.is_dir() {
+                    continue;
+                }
+                let r = if on && b.is_file() {
+                    fs::rename(&b, &a)
+                } else if on && !a.is_file() {
+                    fs::write(&a, "")
+                } else if !on && a.is_file() {
+                    fs::rename(&a, &b)
+                } else {
+                    Ok(())
+                };
+                r.map_err(|e| format!("{}: {e}", a.display()))?;
+            }
+            return Ok(());
+        }
         let paks = self.paks_dir().ok_or(t("Spielordner nicht gefunden", "Game folder not found"))?;
         for f in &m.files {
             let (a, b) = (paks.join(f), paks.join(format!("{f}{OFF}")));
@@ -221,6 +306,16 @@ impl Library {
                     if p.exists() {
                         fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
                     }
+                }
+            }
+        }
+        // The name comes from our own library, but only a plain folder name may be deleted.
+        let folder = self.mods[i].ue4ss.clone();
+        if plain_name(&folder) {
+            for d in self.ue4ss_dirs() {
+                let dir = d.join(&folder);
+                if dir.is_dir() {
+                    fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
                 }
             }
         }
@@ -263,10 +358,15 @@ impl Library {
                 meta.name = pretty_name(&stem);
             }
         }
+        let ext = source.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if ext == "zip" {
+            if let Some(root) = ue4ss_root(source)? {
+                return self.install_ue4ss(source, &root, meta);
+            }
+        }
         let store = self.store_dir().join(&meta.key);
         let _ = fs::remove_dir_all(&store);
         fs::create_dir_all(&store).map_err(|e| e.to_string())?;
-        let ext = source.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         let mut files: Vec<PathBuf> = Vec::new();
         if ext == "zip" {
             files = extract_mod_files(source, &store)?;
@@ -326,6 +426,134 @@ impl Library {
     }
 }
 
+impl Library {
+    /// Unpacks a UE4SS mod zip into UE4SS's Mods folder (keeping its folder layout) and switches it on.
+    fn install_ue4ss(&mut self, source: &Path, root: &Path, mut meta: InstalledMod) -> Result<String, String> {
+        let base = self.ue4ss_mods_dir().ok_or(t(
+            "Das ist ein UE4SS-Mod, aber UE4SS ist im Spielordner nicht installiert.",
+            "This is a UE4SS mod, but UE4SS isn't installed in the game folder.",
+        ))?;
+        let stem = source.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let folder = match root.file_name().map(|n| n.to_string_lossy().to_string()) {
+            Some(n) => n,
+            None => ue4ss_folder(&stem, &meta.name),
+        };
+        if !plain_name(&folder) {
+            return Err(t("Der Mod-Ordner im Archiv hat keinen gültigen Namen.", "The mod folder in the archive has no valid name.").into());
+        }
+        let mut z = zip::ZipArchive::new(fs::File::open(source).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        extract_tree(&mut z, root, &base.join(&folder))?;
+        if meta.key.is_empty() {
+            meta.key = format!("ue4ss-{}", folder.to_lowercase());
+        }
+        if meta.name.is_empty() {
+            meta.name = pretty_name(&folder);
+        }
+        if meta.category.is_empty() || meta.category == "Lokal" {
+            meta.category = "UE4SS".into();
+        }
+        // An older entry for the same mod or folder makes way; its files were just overwritten.
+        let old: Vec<usize> = (0..self.mods.len()).rev().filter(|&i| {
+            let m = &self.mods[i];
+            m.key == meta.key || (meta.nexus_id.is_some() && m.nexus_id == meta.nexus_id) || m.ue4ss.eq_ignore_ascii_case(&folder)
+        }).collect();
+        let order = old.iter().map(|&i| self.mods[i].order).min().unwrap_or_else(|| self.next_order());
+        for i in old {
+            let m = self.mods.remove(i);
+            // A .pak version of the same Nexus mod would otherwise stay in the game.
+            if let Some(p) = self.paks_dir() {
+                for f in &m.files {
+                    let _ = fs::remove_file(p.join(f));
+                    let _ = fs::remove_file(p.join(format!("{f}{OFF}")));
+                }
+            }
+        }
+        meta.ue4ss = folder;
+        meta.files = Vec::new();
+        meta.enabled = true;
+        meta.installed_at = now();
+        meta.order = order;
+        self.place(&meta, !self.settings.vanilla_active)?;
+        let key = meta.key.clone();
+        self.mods.push(meta);
+        self.save();
+        Ok(key)
+    }
+}
+
+/// For a zip without a .pak that holds a UE4SS mod: the folder inside the zip that is the mod
+/// (the one with enabled.txt, else the parent of Scripts/main.lua or dlls/main.dll). None otherwise.
+fn ue4ss_root(zip_path: &Path) -> Result<Option<PathBuf>, String> {
+    let f = fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| crate::tf!("Archiv kann nicht gelesen werden: {}", "Can't read the archive: {}", e))?;
+    let paths: Vec<PathBuf> = (0..z.len()).filter_map(|i| z.by_index(i).ok().and_then(|e| e.enclosed_name())).collect();
+    let lower = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if paths.iter().any(|p| lower(p).ends_with(".pak")) {
+        return Ok(None);
+    }
+    let parent = |p: &Path| p.parent().map(Path::to_path_buf).unwrap_or_default();
+    if let Some(p) = paths.iter().find(|p| lower(p) == "enabled.txt") {
+        return Ok(Some(parent(p)));
+    }
+    Ok(paths.iter().find(|p| matches!(lower(p).as_str(), "main.lua" | "main.dll")).map(|p| {
+        let dir = parent(p);
+        if matches!(lower(&dir).as_str(), "scripts" | "dlls") { parent(&dir) } else { dir }
+    }))
+}
+
+/// Writes every zip entry under `prefix` into `dest`, keeping the folder layout below it.
+fn extract_tree(z: &mut zip::ZipArchive<fs::File>, prefix: &Path, dest: &Path) -> Result<usize, String> {
+    let mut n = 0;
+    for i in 0..z.len() {
+        let mut e = z.by_index(i).map_err(|e| e.to_string())?;
+        // enclosed_name rejects paths that try to leave the folder.
+        let Some(p) = e.enclosed_name() else { continue };
+        let Ok(rel) = p.strip_prefix(prefix) else { continue };
+        if e.is_dir() || rel.as_os_str().is_empty() {
+            continue;
+        }
+        let out = dest.join(rel);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut file = fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        std::io::copy(&mut e, &mut file).map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// A UE4SS folder name for a mod whose zip has no folder of its own:
+/// "NegotiationMoreChoices V1 160 1 2026-11-20T14-56Z kbNzsHtWF" -> "NegotiationMoreChoices".
+fn ue4ss_folder(zip_stem: &str, fallback: &str) -> String {
+    let title = crate::nexus::parse_download_name(&format!("{zip_stem}.zip"))
+        .map(|(t, _)| t)
+        .unwrap_or_else(|| if fallback.is_empty() { zip_stem.to_string() } else { fallback.to_string() });
+    let mut words: Vec<&str> = title.split_whitespace().collect();
+    let versionish = |w: &str| {
+        let w = w.trim_start_matches(['v', 'V']);
+        !w.is_empty() && w.starts_with(|c: char| c.is_ascii_digit()) && w.chars().all(|c| c.is_ascii_digit() || c == '.')
+    };
+    if words.len() > 1 && words.last().is_some_and(|w| versionish(w)) {
+        words.pop();
+    }
+    words.concat().chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect()
+}
+
+/// Every file below `dir`, as paths relative to it.
+fn files_below(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        let Ok(rd) = fs::read_dir(dir.join(&rel)) else { continue };
+        for e in rd.flatten() {
+            let r = rel.join(e.file_name());
+            if e.path().is_dir() { stack.push(r) } else { out.push(r) }
+        }
+    }
+    out
+}
+
 /// What an export file carries besides the mod files themselves.
 #[derive(Serialize, Deserialize)]
 struct ModPack {
@@ -348,6 +576,14 @@ impl Library {
         z.start_file("modpack.json", opt).map_err(|e| e.to_string())?;
         std::io::Write::write_all(&mut z, serde_json::to_string_pretty(&pack).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| e.to_string())?;
         for m in &self.mods {
+            if let Some(dir) = self.ue4ss_dirs().into_iter().map(|d| d.join(&m.ue4ss)).find(|d| !m.ue4ss.is_empty() && d.is_dir()) {
+                for rel in files_below(&dir) {
+                    let name = rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join("/");
+                    z.start_file(format!("files/{}/ue4ss/{}", m.key, name), opt).map_err(|e| e.to_string())?;
+                    let mut file = fs::File::open(dir.join(&rel)).map_err(|e| e.to_string())?;
+                    std::io::copy(&mut file, &mut z).map_err(|e| e.to_string())?;
+                }
+            }
             for f in &m.files {
                 let mut candidates = vec![self.store_dir().join(&m.key).join(f)];
                 if let Some(p) = &paks {
@@ -380,6 +616,19 @@ impl Library {
         let _ = fs::remove_dir_all(&tmp);
         let mut n = 0;
         for m in pack.mods {
+            if !m.ue4ss.is_empty() {
+                let Some(base) = self.ue4ss_mods_dir() else { continue };
+                if !plain_name(&m.key) || !plain_name(&m.ue4ss) || extract_tree(&mut z, Path::new(&format!("files/{}/ue4ss", m.key)), &base.join(&m.ue4ss))? == 0 {
+                    continue;
+                }
+                self.mods.retain(|x| x.key != m.key && !x.ue4ss.eq_ignore_ascii_case(&m.ue4ss));
+                let on = m.enabled && !self.settings.vanilla_active;
+                let m = InstalledMod { order: self.next_order(), installed_at: now(), ..m };
+                self.place(&m, on)?;
+                self.mods.push(m);
+                n += 1;
+                continue;
+            }
             // The file comes from elsewhere: only plain names may become paths.
             if !plain_name(&m.key) || !m.files.iter().all(|f| plain_name(f)) {
                 continue;
@@ -401,6 +650,7 @@ impl Library {
             n += 1;
         }
         let _ = fs::remove_dir_all(&tmp);
+        self.save();
         Ok(n)
     }
 
@@ -485,7 +735,7 @@ pub fn downloads_folder() -> PathBuf {
     #[cfg(windows)]
     {
         let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
-        if let Ok(out) = std::process::Command::new("reg").args(["query", key, "/v", "{374DE290-123F-4565-9164-39C4925E467B}"]).output() {
+        if let Ok(out) = quiet("reg").args(["query", key, "/v", "{374DE290-123F-4565-9164-39C4925E467B}"]).output() {
             let text = String::from_utf8_lossy(&out.stdout);
             if let Some(v) = text.lines().find_map(|l| l.split_once("REG_EXPAND_SZ").or_else(|| l.split_once("REG_SZ")).map(|(_, v)| v.trim().to_string())) {
                 let p = PathBuf::from(v.replace("%USERPROFILE%", &home.to_string_lossy()));
@@ -498,16 +748,27 @@ pub fn downloads_folder() -> PathBuf {
     home.join("Downloads")
 }
 
+/// A command that never flashes a console window (the installed app has none of its own).
+fn quiet(program: &str) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
 pub fn open_url(url: &str) {
     #[cfg(windows)]
-    let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    let _ = quiet("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
     #[cfg(not(windows))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 pub fn open_folder(p: &Path) {
     #[cfg(windows)]
-    let _ = std::process::Command::new("explorer").arg(p).spawn();
+    let _ = quiet("explorer").arg(p).spawn();
     #[cfg(not(windows))]
     let _ = std::process::Command::new("xdg-open").arg(p).spawn();
 }
@@ -521,7 +782,7 @@ pub fn register_nxm_handler() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let cmd = format!("\"{}\" \"%1\"", exe.display());
     let run = |args: &[&str]| -> Result<(), String> {
-        let st = std::process::Command::new("reg").args(args).output().map_err(|e| e.to_string())?;
+        let st = quiet("reg").args(args).output().map_err(|e| e.to_string())?;
         if st.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&st.stderr).into()) }
     };
     run(&["add", r"HKCU\Software\Classes\nxm", "/ve", "/d", "URL:NXM Protocol", "/f"])?;
@@ -574,6 +835,38 @@ mod tests {
         assert_eq!(lib.ue4ss_state(), Some(false));
         lib.apply_all().unwrap();
         assert!(win64.join("dwmapi.dll").exists() && !win64.join("dwmapi.dll.disabled").exists());
+        // A UE4SS mod zip as Nexus ships it (no .pak, files at the top, Nexus's download name).
+        let umods = win64.join("ue4ss").join("Mods");
+        fs::create_dir_all(&umods).unwrap();
+        fs::write(umods.join("mods.txt"), "BPModLoaderMod : 1\n").unwrap();
+        fs::create_dir_all(umods.join("BPModLoaderMod")).unwrap();
+        let uzip = root.join("NegotiationMoreChoices V1 160 1 2026-11-20T14-56Z kbNzsHtWF.zip");
+        {
+            let mut z = zip::ZipWriter::new(fs::File::create(&uzip).unwrap());
+            let o = zip::write::SimpleFileOptions::default();
+            for name in ["main.dll", "dlls/main.dll", "enabled.txt"] {
+                z.start_file(name, o).unwrap();
+                std::io::Write::write_all(&mut z, b"x").unwrap();
+            }
+            z.finish().unwrap();
+        }
+        let k = lib.install(&uzip, InstalledMod { nexus_id: Some(160), ..Default::default() }).unwrap();
+        let dir = umods.join("NegotiationMoreChoices");
+        assert!(dir.join("dlls").join("main.dll").exists() && dir.join("enabled.txt").exists());
+        lib.set_enabled(&k, false).unwrap();
+        assert!(dir.join("enabled.txt.disabled").exists() && !dir.join("enabled.txt").exists());
+        lib.scan();
+        let m = lib.mods.iter().find(|m| m.key == k).unwrap();
+        assert!(!m.enabled && m.ue4ss == "NegotiationMoreChoices");
+        assert!(!lib.mods.iter().any(|m| m.ue4ss == "BPModLoaderMod"), "UE4SS's own mods stay out of the list");
+        // Export / import keeps the UE4SS mod.
+        let pack2 = root.join("pack2.zip");
+        lib.export(&pack2).unwrap();
+        lib.remove(&k).unwrap();
+        assert!(!dir.exists());
+        lib.import(&pack2).unwrap();
+        assert!(dir.join("dlls").join("main.dll").exists() && dir.join("enabled.txt.disabled").exists());
+        assert_eq!(ue4ss_folder("Heat Crosshair 1.0.0 131 1.0.0 2026-10-05T19-35Z IYnqlcQwI", ""), "HeatCrosshair");
         let _ = fs::remove_dir_all(root);
     }
 }

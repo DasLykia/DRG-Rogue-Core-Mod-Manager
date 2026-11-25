@@ -80,6 +80,7 @@ struct Expect {
     dl: u64,
     mod_id: u32,
     uri: String,
+    title: String,
     since: std::time::SystemTime,
 }
 
@@ -386,7 +387,7 @@ impl App {
                     if !meta.is_file() || !stable || meta.len() == 0 {
                         continue;
                     }
-                    if let Some(i) = waiting.iter().position(|e| modified + std::time::Duration::from_secs(5) >= e.since && nexus::is_nexus_download(&name, &e.uri, e.mod_id)) {
+                    if let Some(i) = waiting.iter().position(|e| modified + std::time::Duration::from_secs(5) >= e.since && nexus::is_nexus_download(&name, &e.uri, &e.title, e.mod_id)) {
                         let e = waiting.remove(i);
                         let _ = tx.send(Msg::DlDone(e.dl, Ok(path)));
                         ctx.request_repaint();
@@ -573,7 +574,7 @@ impl App {
             self.next_dl += 1;
             let meta = self.meta_for(mod_id, Some(file), file.id);
             self.downloads.push(Download { id, name: meta.name.clone(), done: 0, total: 0, state: DlState::Waiting, meta });
-            self.expect.lock().unwrap().push(Expect { dl: id, mod_id, uri: file.uri.clone(), since: std::time::SystemTime::now() });
+            self.expect.lock().unwrap().push(Expect { dl: id, mod_id, uri: file.uri.clone(), title: file.name.clone(), since: std::time::SystemTime::now() });
             library::open_url(&format!("https://www.nexusmods.com/{}/mods/{mod_id}?tab=files&file_id={}", nexus::GAME_DOMAIN, file.id));
             self.toast(
                 t(
@@ -1025,7 +1026,7 @@ impl App {
         if self.update_available(m) {
             overlay_badge(ui, img, t("⬆ Update verfügbar", "⬆ Update available"), Color32::from_rgb(30, 60, 110));
         } else if m.nexus_id.is_none() {
-            overlay_badge(ui, img, t("Lokal", "Local"), pal().secondary);
+            overlay_badge(ui, img, if m.ue4ss.is_empty() { t("Lokal", "Local") } else { "UE4SS" }, pal().secondary);
         }
         if self.installed_fresh(m) == Some(false) {
             overlay_badge_at(ui, img, t("⚠ Evtl. veraltet", "⚠ Maybe outdated"), WARN, true);
