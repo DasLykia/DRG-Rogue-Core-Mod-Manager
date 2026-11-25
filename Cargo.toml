@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "core-mod-manager"
 version = "2026.11.26"
 edition = "2021"
