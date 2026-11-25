@@ -2,7 +2,7 @@
 use crate::ui::t;
 use velopack::{sources::GithubSource, UpdateCheck, UpdateInfo, UpdateManager};
 
-pub const REPO_URL: &str = "https://github.com/DasLykia/DPG-Rogue-Core-Mod-Manager";
+pub const REPO_URL: &str = "https://github.com/DasLykia/DRG-Rogue-Core-Mod-Manager";
 
 fn manager() -> Result<UpdateManager, String> {
     UpdateManager::new(GithubSource::new(REPO_URL, None, false), None, None).map_err(|e| match e {

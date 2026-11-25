@@ -9,7 +9,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") || std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("gnu") {
         return;
     }
-    // shortcut: windres's preprocessor splits paths on spaces ("Craft Anything"), so it runs in the
+    // shortcut: windres's preprocessor splits paths that contain spaces, so it runs in the
     // temp folder, which has none on this PC; switch to an .rc-free resource writer if that changes.
     let tmp = std::env::temp_dir().join("cmm-icon-build");
     std::fs::create_dir_all(&tmp).expect("temp folder");

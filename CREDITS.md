@@ -14,7 +14,7 @@ The original's logo, name, Geist font and artwork are not used.
 
 ## App icon
 
-ssets/icon.png – the logo the person provided for this app (cut to its round badge in code; ssets/app.ico is made from it at build time).
+`assets/icon.png`: the logo made for this app (cut to its round badge in code). `assets/app.ico` is made from it at build time.
 
 ## Data at run time
 
