@@ -4,7 +4,7 @@ This build contains the original game's own files, for the private use of the pe
 
 # DPG: Rogue Core Mod Manager
 
-Core Mod Manager – Mod-Manager für Deep Rock Galactic: Rogue Core.
+**DRG: RG Mod Manager** – Mod-Manager für Deep Rock Galactic: Rogue Core.
 
 Ein eigener Mod-Manager im Stil des Deadlock Mod Managers (dunkles Design, Seitenleiste, Mod-Karten mit Schaltern), nur für Rogue Core und für Mods von https://www.nexusmods.com/games/deeprockgalacticroguecore/mods.
 
@@ -14,6 +14,8 @@ Ein eigener Mod-Manager im Stil des Deadlock Mod Managers (dunkles Design, Seite
 - **Exportieren / Importieren** (Meine Mods): speichert alle Mods samt Dateien, Namen und An/Aus-Zustand in eine .zip und installiert sie aus so einer .zip wieder (z. B. für Freunde oder einen anderen PC).
 - **Spielversion und "Evtl. veraltet"**: die App liest die installierte Build-Nummer aus Steam (appmanifest) und die neueste Version aus Steams Patch-Notes (z. B. "EA 03.04.00"). Mods, die auf Nexus seit dem letzten Spiel-Patch nicht aktualisiert wurden, bekommen "⚠ Evtl. veraltet", die anderen "✔ Aktuell"; neue Mods (unter 7 Tagen) "Neu". Filter dafür im Store und als Reiter in Meine Mods. Nexus sagt nicht, für welche Spielversion ein Mod gebaut ist, und die Nexus-Webseite lässt keine automatischen Abrufe zu – Kommentare und Bug-Meldungen können deshalb nicht gezählt werden.
 - **Updates erkennen**: beim Start fragt die App Nexus nach den Dateien jedes installierten Mods. Für Mods, die über die App installiert wurden, kennt sie die genaue Datei und meldet eine neuere Datei derselben Reihe (z. B. V2.2 → V2.3) als "⬆ Update verfügbar" (Reiter "Updates", Hinweis oben in Meine Mods, Markierung "⬆ Update für dich" auf der Mod-Seite). Bei Mods, die schon im Paks-Ordner lagen, vergleicht sie die Version im Dateinamen (z. B. "…V2.3_P.pak") mit der neuesten Nexus-Version; steht im Dateinamen keine Version, kann sie es nicht sagen – einmal über die App neu installieren, dann wird der Mod genau verfolgt.
+- **Fenster**: eigene Titelleiste wie beim Deadlock Mod Manager (Minimieren, Fenstermodus/Maximieren, Schließen; ziehen zum Verschieben, Doppelklick maximiert, Ränder zum Größe-Ändern). Maus-Seitentasten (und Alt+←/→ sowie die Pfeile oben) gehen zurück/vor wie im Browser.
+- **Einstellungen**: Anwendung (Sprache, automatische App-Updates, Mods beim Start wieder anwenden, nach Spielstart minimieren, Standard-Sortierung), Darstellung, Spiel, Nexus, App-Updates, Mod-Backups (erstellen, automatisch vor Updates/Importen/Wiederherstellen, Anzahl behalten, wiederherstellen, löschen) und Daten (Download-Cache leeren, Mod-Liste zurücksetzen, alle Mods entfernen).
 - **Wiki**: eigene Seite mit Suche im Rogue-Core-Wiki (deeprockgalactic.wiki.gg), Schnellzugriffen und "Wiki öffnen".
 
 - **Meine Mods**: zeigt alle installierten Mods als Karten; ein Schalter schaltet jeden Mod an/aus, der Mülleimer entfernt ihn. Mods, die schon im Paks-Ordner des Spiels liegen, werden automatisch gefunden und – wenn der Name passt – mit ihrer Nexus-Seite verknüpft (Bild, Autor). Reiter: Alle / Aktiv / Deaktiviert / Updates, Suche, Sortierung.

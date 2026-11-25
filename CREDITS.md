@@ -12,6 +12,10 @@ What was taken from the original Deadlock Mod Manager 2.3.0 (read from `deadlock
 
 The original's logo, name, Geist font and artwork are not used.
 
+## App icon
+
+ssets/icon.png – the logo the person provided for this app (cut to its round badge in code; ssets/app.ico is made from it at build time).
+
 ## Data at run time
 
 - Mod list, pictures, descriptions and files: Nexus Mods (https://www.nexusmods.com), public GraphQL API v2 and REST API v1. Pictures are cached in `%APPDATA%\CoreModManager\thumbs`.

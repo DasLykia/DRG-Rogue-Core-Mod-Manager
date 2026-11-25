@@ -32,7 +32,7 @@ Copy-Item target\release\core-mod-manager.exe publish\
 if (Test-Path Releases) { Remove-Item Releases -Recurse -Force }
 # The previous release lets vpk make a small delta update (fails harmlessly for the first release).
 vpk download github --repoUrl $repo --token $token
-vpk pack --packId DPG.RogueCoreModManager --packVersion $Version --packDir publish --mainExe core-mod-manager.exe --packTitle 'DPG Rogue Core Mod Manager' --packAuthors DasLykia --icon "$PSScriptRoot\assets\app.ico"
+vpk pack --packId DPG.RogueCoreModManager --packVersion $Version --packDir publish --mainExe core-mod-manager.exe --packTitle 'DRG RG Mod Manager' --packAuthors DasLykia --icon "$PSScriptRoot\assets\app.ico"
 if ($LASTEXITCODE) { throw 'vpk pack failed' }
 vpk upload github --repoUrl $repo --token $token --publish --releaseName "v$Version" --tag "v$Version"
 if ($LASTEXITCODE) { throw 'vpk upload failed' }

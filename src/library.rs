@@ -46,6 +46,18 @@ pub struct Settings {
     pub lang: String,
     /// Id of a theme in ui::THEMES.
     pub theme: String,
+    /// Don't look for app updates at start (default: look).
+    pub no_auto_update: bool,
+    /// Don't back the mods up before installing an update or restoring (default: back up).
+    pub no_auto_backup: bool,
+    /// How many backups to keep (0 means the default of 5, as in the original).
+    pub max_backups: u32,
+    /// At start, switch mods back on when the last launch was without mods.
+    pub reapply_on_start: bool,
+    /// Minimise the app once the game is launched.
+    pub minimize_on_launch: bool,
+    /// Library sort at start: 0 install order, 1 name, 2 recently added.
+    pub default_sort: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -554,6 +566,83 @@ fn files_below(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// One saved backup of all mods.
+pub struct Backup {
+    pub path: PathBuf,
+    pub created: u64,
+    pub size: u64,
+}
+
+impl Library {
+    pub fn backups_dir(&self) -> PathBuf {
+        self.data_dir.join("backups")
+    }
+
+    pub fn max_backups(&self) -> usize {
+        if self.settings.max_backups == 0 { 5 } else { self.settings.max_backups as usize }
+    }
+
+    /// Saves every mod (an export file) into the backups folder and drops the oldest beyond the limit.
+    pub fn backup(&self, reason: &str) -> Result<PathBuf, String> {
+        let dir = self.backups_dir();
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let stamp = now();
+        let path = (0..).map(|i| dir.join(format!("backup-{stamp}-{reason}-{i}.zip"))).find(|p| !p.exists()).unwrap();
+        self.export(&path)?;
+        for old in self.backups().into_iter().skip(self.max_backups()) {
+            let _ = fs::remove_file(old.path);
+        }
+        Ok(path)
+    }
+
+    /// Saved backups, newest first.
+    pub fn backups(&self) -> Vec<Backup> {
+        let mut out: Vec<Backup> = fs::read_dir(self.backups_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("backup-") && e.file_name().to_string_lossy().ends_with(".zip"))
+            .map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let created = name.trim_start_matches("backup-").split(['-', '.']).next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                Backup { size: e.metadata().map(|m| m.len()).unwrap_or(0), path: e.path(), created }
+            })
+            .collect();
+        out.sort_by(|a, b| b.created.cmp(&a.created).then(b.path.cmp(&a.path)));
+        out
+    }
+
+    /// Brings back the mods of a backup (backing up the current state first, unless switched off).
+    pub fn restore(&mut self, backup: &Path) -> Result<usize, String> {
+        if !self.settings.no_auto_backup {
+            self.backup("before-restore")?;
+        }
+        self.import(backup)
+    }
+
+    /// Deletes downloaded archives; installed mods keep working. Returns the bytes freed.
+    pub fn clear_download_cache(&self) -> u64 {
+        let freed = files_below(&self.downloads_dir()).iter().filter_map(|p| fs::metadata(self.downloads_dir().join(p)).ok()).map(|m| m.len()).sum();
+        let _ = fs::remove_dir_all(self.downloads_dir());
+        freed
+    }
+
+    /// Forgets the mod list without touching the game folder, then reads the game folder again.
+    pub fn reset_list(&mut self) {
+        self.mods.clear();
+        self.scan();
+    }
+
+    /// Removes every mod from the game folder and the list.
+    pub fn remove_all(&mut self) -> Result<usize, String> {
+        let keys: Vec<String> = self.mods.iter().map(|m| m.key.clone()).collect();
+        for k in &keys {
+            self.remove(k)?;
+        }
+        Ok(keys.len())
+    }
+}
+
 /// What an export file carries besides the mod files themselves.
 #[derive(Serialize, Deserialize)]
 struct ModPack {
@@ -867,6 +956,20 @@ mod tests {
         lib.import(&pack2).unwrap();
         assert!(dir.join("dlls").join("main.dll").exists() && dir.join("enabled.txt.disabled").exists());
         assert_eq!(ue4ss_folder("Heat Crosshair 1.0.0 131 1.0.0 2026-10-05T19-35Z IYnqlcQwI", ""), "HeatCrosshair");
+        // Backups: the limit drops the oldest; restoring brings a removed mod back.
+        lib.settings.max_backups = 2;
+        for _ in 0..3 {
+            lib.backup("test").unwrap();
+        }
+        let backups = lib.backups();
+        assert_eq!(backups.len(), 2);
+        let count = lib.mods.len();
+        lib.remove_all().unwrap();
+        assert!(lib.mods.is_empty() && !dir.exists());
+        lib.settings.no_auto_backup = true;
+        lib.restore(&backups[0].path).unwrap();
+        assert_eq!(lib.mods.len(), count);
+        assert!(dir.join("dlls").join("main.dll").exists());
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,8 +1,11 @@
-// Writes the app icon (drawn in src/icon.rs) as an .ico and embeds it in the Windows .exe.
+// Turns assets/icon.png into the .exe icon (and assets/app.ico for the Velopack installer).
 include!("src/icon.rs");
 
 fn main() {
     println!("cargo:rerun-if-changed=src/icon.rs");
+    println!("cargo:rerun-if-changed=assets/icon.png");
+    let ico = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets").join("app.ico");
+    image::save_buffer(&ico, &icon_rgba(256), 256, 256, image::ColorType::Rgba8).expect("write icon");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") || std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("gnu") {
         return;
     }
@@ -10,7 +13,7 @@ fn main() {
     // temp folder, which has none on this PC; switch to an .rc-free resource writer if that changes.
     let tmp = std::env::temp_dir().join("cmm-icon-build");
     std::fs::create_dir_all(&tmp).expect("temp folder");
-    image::save_buffer(tmp.join("app.ico"), &icon_rgba(256), 256, 256, image::ColorType::Rgba8).expect("write icon");
+    std::fs::copy(&ico, tmp.join("app.ico")).expect("copy icon");
     std::fs::write(tmp.join("app.rc"), "1 ICON \"app.ico\"\n").expect("write rc");
     let ok = std::process::Command::new("windres")
         .current_dir(&tmp)

@@ -14,7 +14,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use ui::*;
 
-const APP_NAME: &str = "Core Mod Manager";
+const APP_NAME: &str = "DRG: RG Mod Manager";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const IPC_PORT: u16 = 47813;
 
@@ -145,6 +145,11 @@ struct App {
     store_shown: usize,
     key_edit: String,
     confirm_delete: Option<String>,
+    confirm_remove_all: bool,
+    /// Pages to go back / forward to (mouse side buttons, Alt+arrows, the arrows in the top bar).
+    back_stack: Vec<Page>,
+    fwd_stack: Vec<Page>,
+    last_page: Page,
     mode: Mode,
     out_file: Option<PathBuf>,
     frame: u64,
@@ -188,7 +193,7 @@ fn main() -> eframe::Result<()> {
         }
     }
     let icon = egui::IconData { rgba: icon::icon_rgba(64), width: 64, height: 64 };
-    let mut vp = egui::ViewportBuilder::default().with_title(APP_NAME).with_icon(Arc::new(icon)).with_inner_size([1280.0, 800.0]).with_min_inner_size([960.0, 620.0]);
+    let mut vp = egui::ViewportBuilder::default().with_title(APP_NAME).with_icon(Arc::new(icon)).with_decorations(false).with_inner_size([1280.0, 800.0]).with_min_inner_size([960.0, 620.0]);
     if mode != Mode::Normal {
         vp = vp.with_active(false);
         #[cfg(windows)]
@@ -219,7 +224,11 @@ impl App {
         set_theme(&lib.settings.theme);
         setup_style(&cc.egui_ctx);
         lib.scan();
+        if mode == Mode::Normal && lib.settings.reapply_on_start && lib.settings.vanilla_active {
+            let _ = lib.apply_all();
+        }
         let logo = cc.egui_ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([128, 128], &icon::icon_rgba(128)), egui::TextureOptions::LINEAR);
+        let lib_sort = [LibSort::Order, LibSort::Name, LibSort::Recent][(lib.settings.default_sort as usize).min(2)];
         let mut app = App {
             logo,
             key_edit: lib.settings.api_key.clone(),
@@ -243,12 +252,16 @@ impl App {
             status: String::new(),
             lib_search: String::new(),
             lib_tab: LibTab::All,
-            lib_sort: LibSort::Order,
+            lib_sort,
             store_search: String::new(),
             store_cat: String::new(),
             store_sort: StoreSort::Endorsements,
             store_shown: 48,
             confirm_delete: None,
+            confirm_remove_all: false,
+            back_stack: Vec::new(),
+            fwd_stack: Vec::new(),
+            last_page: Page::Library,
             mode,
             out_file,
             frame: 0,
@@ -636,7 +649,15 @@ impl App {
 
     fn finish_download(&mut self, id: u64, r: Result<PathBuf, String>) {
         let Some(i) = self.downloads.iter().position(|d| d.id == id) else { return };
-        let res = r.and_then(|p| self.lib.install(&p, self.downloads[i].meta.clone()));
+        // An update replaces an installed mod: back the mods up first, as the original does.
+        let meta = self.downloads[i].meta.clone();
+        let is_update = self.lib.mods.iter().any(|m| m.key == meta.key || (meta.nexus_id.is_some() && m.nexus_id == meta.nexus_id));
+        if r.is_ok() && is_update && !self.lib.settings.no_auto_backup {
+            if let Err(e) = self.lib.backup("update") {
+                self.toast(crate::tf!("Backup vor dem Update fehlgeschlagen: {}", "Backup before the update failed: {}", e), true);
+            }
+        }
+        let res = r.and_then(|p| self.lib.install(&p, meta));
         let name = self.downloads[i].name.clone();
         match res {
             Ok(_) => {
@@ -742,6 +763,9 @@ impl App {
 
     fn import_mods(&mut self) {
         let Some(src) = rfd::FileDialog::new().add_filter("Mod-Paket", &["zip"]).pick_file() else { return };
+        if !self.lib.settings.no_auto_backup && !self.lib.mods.is_empty() {
+            let _ = self.lib.backup("before-import");
+        }
         match self.lib.import(&src) {
             Ok(n) => {
                 self.link_local_mods();
@@ -776,15 +800,35 @@ impl App {
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top").show_separator_line(false)
             .exact_height(44.0)
-            .frame(egui::Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(12, 6)).stroke(Stroke::new(1.0f32, pal().border)))
+            .frame(egui::Frame::new().fill(pal().bg).inner_margin(Margin { left: 12, right: 0, top: 0, bottom: 0 }).stroke(Stroke::new(1.0f32, pal().border)))
             .show(ctx, |ui| {
+                // The bar is the window's title bar (Windows' own is hidden): drag to move, double-click to maximise.
+                let bar = ui.interact(ui.max_rect(), egui::Id::new("titlebar"), Sense::click_and_drag());
+                if bar.drag_started_by(egui::PointerButton::Primary) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if bar.double_clicked() {
+                    toggle_maximized(ctx);
+                }
                 ui.horizontal_centered(|ui| {
+                    ui.add_enabled_ui(!self.back_stack.is_empty(), |ui| {
+                        if icon_button(ui, "⬅", t("Zurück (Maus-Seitentaste)", "Back (mouse side button)")).clicked() {
+                            self.go_back();
+                        }
+                    });
+                    ui.add_enabled_ui(!self.fwd_stack.is_empty(), |ui| {
+                        if icon_button(ui, "➡", t("Vor (Maus-Seitentaste)", "Forward (mouse side button)")).clicked() {
+                            self.go_forward();
+                        }
+                    });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        window_controls(ui);
+                        ui.add_space(10.0);
                         let n = self.lib.active_count();
                         if primary_button(ui, &crate::tf!("▶ Mit Mods starten  ·  {} Mods", "▶ Launch modded  ·  {} mods", n)).clicked() {
                             match self.lib.apply_all() {
                                 Ok(()) => {
-                                    library::launch_game();
+                                    self.launch();
                                     self.toast(crate::tf!("Spiel startet mit {} Mods", "Starting the game with {} mods", n), false);
                                 }
                                 Err(e) => self.toast(e, true),
@@ -793,7 +837,7 @@ impl App {
                         if outline_button(ui, t("⏵ Ohne Mods starten", "⏵ Launch without mods")).clicked() {
                             match self.lib.suspend_all() {
                                 Ok(()) => {
-                                    library::launch_game();
+                                    self.launch();
                                     self.toast(t("Spiel startet ohne Mods (auch ohne UE4SS-Mods). \"Mit Mods starten\" schaltet sie wieder ein.", "Starting the game without mods (UE4SS mods too). \"Launch modded\" turns them back on."), false);
                                 }
                                 Err(e) => self.toast(e, true),
@@ -841,16 +885,22 @@ impl App {
         egui::SidePanel::left("side").show_separator_line(false)
             .exact_width(214.0)
             .resizable(false)
-            .frame(egui::Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(10, 12)).stroke(Stroke::new(1.0f32, pal().sidebar_border)))
+            .frame(egui::Frame::new().fill(pal().bg).inner_margin(Margin { left: 10, right: 10, top: 4, bottom: 12 }).stroke(Stroke::new(1.0f32, pal().sidebar_border)))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), vec2(36.0, 36.0))));
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(APP_NAME).family(semibold()).color(pal().fg));
-                        ui.label(RichText::new(format!("v{VERSION} · Rogue Core")).small().color(pal().muted_fg));
-                    });
-                });
-                ui.add_space(14.0);
+                // Logo and name sit in the window's top-left corner, level with the top bar, and drag the window too.
+                let (head, drag) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click_and_drag());
+                if drag.drag_started_by(egui::PointerButton::Primary) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if drag.double_clicked() {
+                    toggle_maximized(ctx);
+                }
+                let logo = egui::Rect::from_min_size(egui::pos2(head.left() + 2.0, head.center().y - 16.0), vec2(32.0, 32.0));
+                egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), vec2(32.0, 32.0))).paint_at(ui, logo);
+                let p = ui.painter();
+                p.text(egui::pos2(logo.right() + 10.0, head.center().y - 8.0), egui::Align2::LEFT_CENTER, APP_NAME, egui::FontId::new(14.0, semibold()), pal().fg);
+                p.text(egui::pos2(logo.right() + 10.0, head.center().y + 9.0), egui::Align2::LEFT_CENTER, format!("v{VERSION} · Rogue Core"), egui::FontId::proportional(11.5), pal().muted_fg);
+                ui.add_space(12.0);
                 let running = self.downloads.iter().filter(|d| matches!(d.state, DlState::Running)).count();
                 nav_group(ui, t("Allgemein", "General"));
                 self.nav_item(ui, "⬇", "Downloads", Page::Downloads, (running > 0).then(|| running.to_string()));
@@ -1327,6 +1377,10 @@ impl App {
                 let _ = std::fs::create_dir_all(&dir);
                 library::open_folder(&dir);
             }
+            if outline_button(ui, t("🗑 Alle löschen", "🗑 Clear all")).on_hover_text(t("Leert die Liste; Warten auf Downloads wird abgebrochen.", "Empties the list; waiting for downloads stops.")).clicked() {
+                s.downloads.clear();
+                s.expect.lock().unwrap().clear();
+            }
             if outline_button(ui, t("Fertige entfernen", "Clear finished")).clicked() {
                 s.downloads.retain(|d| matches!(d.state, DlState::Running | DlState::Waiting));
             }
@@ -1385,21 +1439,120 @@ impl App {
         }
     }
 
-    fn page_settings(&mut self, ui: &mut Ui) {
-        self.page_header(ui, t("Einstellungen", "Settings"), None, t("Sprache, Design, Spielordner und Nexus-Konto", "Language, theme, game folder and Nexus account"), |_, _| {});
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            settings_card(ui, t("Sprache", "Language"), |ui| {
+    fn go_back(&mut self) {
+        if let Some(p) = self.back_stack.pop() {
+            self.fwd_stack.push(self.page);
+            self.show_page(p);
+        }
+    }
+
+    fn go_forward(&mut self) {
+        if let Some(p) = self.fwd_stack.pop() {
+            self.back_stack.push(self.page);
+            self.show_page(p);
+        }
+    }
+
+    /// Opens a page from the history without recording it again.
+    fn show_page(&mut self, p: Page) {
+        self.page = p;
+        self.last_page = p;
+        if let Page::Detail(id) = p {
+            if !matches!(self.details.get(&id), Some(Ok(_))) {
+                self.details.remove(&id);
+                self.spawn(move || Msg::Detail(id, nexus::fetch_detail(id)));
+            }
+        }
+    }
+
+    fn launch(&mut self) {
+        library::launch_game();
+        if self.lib.settings.minimize_on_launch {
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+    }
+
+    fn remove_all_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_remove_all {
+            return;
+        }
+        let n = self.lib.mods.len();
+        egui::Window::new(t("Alle Mods entfernen?", "Remove all mods?"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .frame(egui::Frame::new().fill(pal().card).stroke(Stroke::new(1.0f32, pal().border)).corner_radius(CornerRadius::same(RADIUS)).inner_margin(Margin::same(16)))
+            .show(ctx, |ui| {
+                ui.label(RichText::new(crate::tf!("Alle {} Mods werden aus dem Spielordner gelöscht.", "All {} mods will be deleted from the game folder.", n)).color(pal().fg));
+                if !self.lib.settings.no_auto_backup {
+                    ui.label(RichText::new(t("Vorher wird automatisch ein Backup erstellt.", "A backup is made first.")).small().color(pal().muted_fg));
+                }
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    for (code, label) in [("de", "Deutsch"), ("en", "English")] {
+                    if danger_button(ui, t("Alle entfernen", "Remove all")).clicked() {
+                        let backed_up = self.lib.settings.no_auto_backup || self.lib.backup("before-remove-all").is_ok();
+                        if !backed_up {
+                            self.toast(t("Backup fehlgeschlagen – nichts wurde gelöscht.", "Backup failed – nothing was deleted."), true);
+                        } else {
+                            match self.lib.remove_all() {
+                                Ok(n) => self.toast(crate::tf!("{} Mods entfernt", "{} mods removed", n), false),
+                                Err(e) => self.toast(e, true),
+                            }
+                        }
+                        self.confirm_remove_all = false;
+                    }
+                    if outline_button(ui, t("Abbrechen", "Cancel")).clicked() {
+                        self.confirm_remove_all = false;
+                    }
+                });
+            });
+    }
+
+    fn page_settings(&mut self, ui: &mut Ui) {
+        self.page_header(ui, t("Einstellungen", "Settings"), None, t("Anwendung, Darstellung, Spiel, Nexus, Backups und Daten", "Application, appearance, game, Nexus, backups and data"), |_, _| {});
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            let mut save = false;
+            settings_card(ui, t("Anwendung", "Application"), |ui| {
+                setting_row(ui, t("Sprache", "Language"), t("Sprache der ganzen App.", "Language of the whole app."), |ui| {
+                    for (code, label) in [("en", "English"), ("de", "Deutsch")] {
                         let on = (code == "en") == is_english();
                         if tab_button(ui, label, on).clicked() && !on {
                             self.set_language(code);
                         }
                     }
                 });
+                let s = &mut self.lib.settings;
+                let mut auto_update = !s.no_auto_update;
+                setting_row(ui, t("Automatische Updates", "Automatic updates"), t("Beim Start nach neuen App-Versionen suchen.", "Check for new app versions at start."), |ui| {
+                    if toggle(ui, &mut auto_update).changed() {
+                        save = true;
+                    }
+                });
+                s.no_auto_update = !auto_update;
+                setting_row(ui, t("Mods beim Start wieder anwenden", "Reapply mods at start"), t("Wurde zuletzt ohne Mods gestartet, schaltet die App sie beim Öffnen wieder ein.", "If the last launch was without mods, the app switches them back on when it opens."), |ui| {
+                    save |= toggle(ui, &mut s.reapply_on_start).changed();
+                });
+                setting_row(ui, t("Nach Spielstart minimieren", "Minimise after launching"), t("Die App verschwindet in die Taskleiste, sobald das Spiel startet.", "The app goes to the taskbar once the game starts."), |ui| {
+                    save |= toggle(ui, &mut s.minimize_on_launch).changed();
+                });
+                let sorts = [t("Installationsreihenfolge", "Install Order"), "Name", t("Zuletzt hinzugefügt", "Recently Added")];
+                let mut sort = (s.default_sort as usize).min(2);
+                setting_row(ui, t("Standard-Sortierung", "Default sort"), t("Sortierung von \"Meine Mods\" beim Start.", "Sort of the Mods Library at start."), |ui| {
+                    egui::ComboBox::from_id_salt("defsort").selected_text(sorts[sort]).show_ui(ui, |ui| {
+                        for (i, l) in sorts.iter().enumerate() {
+                            ui.selectable_value(&mut sort, i, *l);
+                        }
+                    });
+                });
+                if sort as u8 != s.default_sort {
+                    s.default_sort = sort as u8;
+                    self.lib_sort = [LibSort::Order, LibSort::Name, LibSort::Recent][sort];
+                    save = true;
+                }
             });
-            settings_card(ui, t("Design", "Theme"), |ui| {
-                ui.label(RichText::new(t("Farben der ganzen App.", "Colours of the whole app.")).color(pal().muted_fg));
+            settings_card(ui, t("Darstellung", "Appearance"), |ui| {
+                ui.label(RichText::new(t("Design", "Theme")).color(pal().fg));
+                ui.label(RichText::new(t("Farben der ganzen App.", "Colours of the whole app.")).small().color(pal().muted_fg));
                 ui.add_space(6.0);
                 let current = pal().id;
                 ui.horizontal_wrapped(|ui| {
@@ -1408,9 +1561,13 @@ impl App {
                             self.lib.settings.theme = th.id.into();
                             set_theme(th.id);
                             apply_theme(ui.ctx());
-                            self.lib.save();
+                            save = true;
                         }
                     }
+                });
+                ui.add_space(8.0);
+                setting_row(ui, t("Mods für Erwachsene anzeigen", "Show adult mods"), t("Im Mod-Store von Nexus.", "In the Nexus mods store."), |ui| {
+                    save |= toggle(ui, &mut self.lib.settings.show_adult).changed();
                 });
             });
             settings_card(ui, t("Spiel", "Game"), |ui| {
@@ -1440,10 +1597,15 @@ impl App {
                         if let Some(v) = self.game_version_text() {
                             ui.label(RichText::new(v).color(pal().fg));
                         }
-                        ui.label(RichText::new(crate::tf!("✔ Paks-Ordner: {}", "✔ Paks folder: {}", p.display())).small().color(OK))
+                        ui.label(RichText::new(crate::tf!("✔ Paks-Ordner: {}", "✔ Paks folder: {}", p.display())).small().color(OK));
+                        if let Some(u) = self.lib.ue4ss_mods_dir() {
+                            ui.label(RichText::new(crate::tf!("✔ UE4SS-Mods: {}", "✔ UE4SS mods: {}", u.display())).small().color(OK));
+                        }
                     }
-                    None => ui.label(RichText::new(t("✖ Kein Paks-Ordner (RogueCore\\Content\\Paks) gefunden", "✖ No Paks folder (RogueCore\\Content\\Paks) found")).small().color(BAD)),
-                };
+                    None => {
+                        ui.label(RichText::new(t("✖ Kein Paks-Ordner (RogueCore\\Content\\Paks) gefunden", "✖ No Paks folder (RogueCore\\Content\\Paks) found")).small().color(BAD));
+                    }
+                }
             });
             settings_card(ui, "Nexus Mods", |ui| {
                 ui.label(RichText::new(t("Persönlicher API-Schlüssel – nötig zum Herunterladen. Mods ansehen geht auch ohne.", "Personal API key – needed for downloads. Browsing works without it.")).color(pal().muted_fg));
@@ -1451,7 +1613,7 @@ impl App {
                     ui.add(egui::TextEdit::singleline(&mut self.key_edit).password(true).desired_width(460.0).hint_text(t("API-Schlüssel einfügen", "Paste API key")));
                     if primary_button(ui, t("Speichern & prüfen", "Save & check")).clicked() {
                         self.lib.settings.api_key = self.key_edit.trim().to_string();
-                        self.lib.save();
+                        save = true;
                         if self.lib.settings.api_key.is_empty() {
                             self.user = None;
                             self.user_msg = t("Abgemeldet", "Signed out").into();
@@ -1475,11 +1637,6 @@ impl App {
                     }
                 }
             });
-            settings_card(ui, t("Anzeige", "Display"), |ui| {
-                if ui.checkbox(&mut self.lib.settings.show_adult, RichText::new(t("Mods für Erwachsene anzeigen", "Show adult mods")).color(pal().fg)).changed() {
-                    self.lib.save();
-                }
-            });
             settings_card(ui, t("App-Updates", "App updates"), |ui| {
                 ui.label(RichText::new(crate::tf!("Installierte Version: {}", "Installed version: {}", VERSION)).color(pal().fg));
                 if !self.app_update_msg.is_empty() {
@@ -1497,12 +1654,93 @@ impl App {
                     }
                 });
             });
-            settings_card(ui, t("Daten", "Data"), |ui| {
-                ui.label(RichText::new(crate::tf!("Bibliothek und Downloads liegen in {}", "Library and downloads are stored in {}", self.lib.data_dir.display())).small().color(pal().muted_fg));
-                if outline_button(ui, t("📁 Datenordner öffnen", "📁 Open data folder")).clicked() {
-                    library::open_folder(&self.lib.data_dir);
+            settings_card(ui, t("Mod-Backups", "Mod backups"), |ui| {
+                ui.label(RichText::new(t("Sichert alle Mods (Dateien, Namen, An/Aus) als .zip und stellt sie wieder her.", "Saves all mods (files, names, on/off) as a .zip and brings them back.")).color(pal().muted_fg));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, t("💾 Backup erstellen", "💾 Create backup")).clicked() {
+                        match self.lib.backup("manual") {
+                            Ok(_) => self.toast(t("Backup erstellt", "Backup created"), false),
+                            Err(e) => self.toast(crate::tf!("Backup fehlgeschlagen: {}", "Backup failed: {}", e), true),
+                        }
+                    }
+                    if outline_button(ui, t("📁 Backup-Ordner", "📁 Backup folder")).clicked() {
+                        let _ = std::fs::create_dir_all(self.lib.backups_dir());
+                        library::open_folder(&self.lib.backups_dir());
+                    }
+                });
+                ui.add_space(6.0);
+                let mut auto = !self.lib.settings.no_auto_backup;
+                setting_row(ui, t("Automatisch sichern vor Updates", "Auto-backup before updates"), t("Vor Mod-Updates, Importen, Wiederherstellen und \"Alle entfernen\".", "Before mod updates, imports, restores and \"Remove all\"."), |ui| {
+                    save |= toggle(ui, &mut auto).changed();
+                });
+                self.lib.settings.no_auto_backup = !auto;
+                let mut keep = self.lib.max_backups() as u32;
+                setting_row(ui, t("Backups behalten", "Backups to keep"), t("Ältere werden automatisch gelöscht.", "Older ones are deleted automatically."), |ui| {
+                    save |= ui.add(egui::Slider::new(&mut keep, 1..=20)).changed();
+                });
+                self.lib.settings.max_backups = keep;
+                let backups = self.lib.backups();
+                if backups.is_empty() {
+                    ui.label(RichText::new(t("Noch keine Backups.", "No backups yet.")).small().color(pal().muted_fg));
+                }
+                let (mut restore, mut delete) = (None, None);
+                for b in &backups {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{} · {} · {}", ago(b.created), fmt_date(&unix_to_iso(b.created)), fmt_size(b.size))).color(pal().fg));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if outline_button(ui, t("Löschen", "Delete")).clicked() {
+                                delete = Some(b.path.clone());
+                            }
+                            if outline_button(ui, t("Wiederherstellen", "Restore")).clicked() {
+                                restore = Some(b.path.clone());
+                            }
+                        });
+                    });
+                }
+                if let Some(p) = delete {
+                    let _ = std::fs::remove_file(p);
+                }
+                if let Some(p) = restore {
+                    match self.lib.restore(&p) {
+                        Ok(n) => {
+                            self.link_local_mods();
+                            self.toast(crate::tf!("{} Mods wiederhergestellt", "Restored {} mods", n), false);
+                        }
+                        Err(e) => self.toast(crate::tf!("Wiederherstellen fehlgeschlagen: {}", "Restore failed: {}", e), true),
+                    }
                 }
             });
+            settings_card(ui, t("Daten", "Data"), |ui| {
+                ui.label(RichText::new(crate::tf!("Bibliothek, Downloads und Backups liegen in {}", "Library, downloads and backups are stored in {}", self.lib.data_dir.display())).small().color(pal().muted_fg));
+                ui.add_space(4.0);
+                setting_row(ui, t("Datenordner", "Data folder"), "", |ui| {
+                    if outline_button(ui, t("📁 Öffnen", "📁 Open")).clicked() {
+                        library::open_folder(&self.lib.data_dir);
+                    }
+                });
+                setting_row(ui, t("Download-Cache leeren", "Clear download cache"), t("Löscht heruntergeladene Archive. Installierte Mods bleiben.", "Deletes downloaded archives. Installed mods stay."), |ui| {
+                    if outline_button(ui, t("Leeren", "Clear")).clicked() {
+                        let freed = self.lib.clear_download_cache();
+                        self.toast(crate::tf!("{} freigegeben", "{} freed", fmt_size(freed)), false);
+                    }
+                });
+                setting_row(ui, t("Mod-Liste zurücksetzen", "Reset mod list"), t("Vergisst die Liste und liest den Spielordner neu ein. Es wird nichts gelöscht.", "Forgets the list and reads the game folder again. Nothing is deleted."), |ui| {
+                    if outline_button(ui, t("Zurücksetzen", "Reset")).clicked() {
+                        self.lib.reset_list();
+                        self.link_local_mods();
+                        self.toast(t("Mod-Liste neu eingelesen", "Mod list read again"), false);
+                    }
+                });
+                setting_row(ui, t("Alle Mods entfernen", "Remove all mods"), t("Löscht alle Mods aus dem Spielordner.", "Deletes every mod from the game folder."), |ui| {
+                    if danger_button(ui, t("Alle entfernen", "Remove all")).clicked() {
+                        self.confirm_remove_all = true;
+                    }
+                });
+            });
+            if save {
+                self.lib.save();
+            }
         });
     }
 
@@ -1721,6 +1959,43 @@ impl App {
     }
 }
 
+fn toggle_maximized(ctx: &egui::Context) {
+    let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed));
+}
+
+/// Without Windows' frame the window has no resize borders; these 5 px edges stand in for them.
+fn resize_edges(ctx: &egui::Context) {
+    use egui::viewport::ResizeDirection as D;
+    if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+        return;
+    }
+    let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) else { return };
+    let r = ctx.screen_rect();
+    let m = 5.0;
+    let (l, rt, tp, b) = (pos.x < r.left() + m, pos.x > r.right() - m, pos.y < r.top() + m, pos.y > r.bottom() - m);
+    let dir = match (l, rt, tp, b) {
+        (true, _, true, _) => D::NorthWest,
+        (_, true, true, _) => D::NorthEast,
+        (true, _, _, true) => D::SouthWest,
+        (_, true, _, true) => D::SouthEast,
+        (true, ..) => D::West,
+        (_, true, ..) => D::East,
+        (_, _, true, _) => D::North,
+        (_, _, _, true) => D::South,
+        _ => return,
+    };
+    ctx.set_cursor_icon(match dir {
+        D::North | D::South => egui::CursorIcon::ResizeVertical,
+        D::East | D::West => egui::CursorIcon::ResizeHorizontal,
+        D::NorthWest | D::SouthEast => egui::CursorIcon::ResizeNwSe,
+        D::NorthEast | D::SouthWest => egui::CursorIcon::ResizeNeSw,
+    });
+    if ctx.input(|i| i.pointer.primary_pressed()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+    }
+}
+
 impl eframe::App for App {
     // eframe's default is near-black, which shows as dark seams between panels in the light theme.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -1734,9 +2009,22 @@ impl eframe::App for App {
         if !dropped.is_empty() {
             self.install_local(dropped);
         }
-        self.top_bar(ctx);
+        let (back, fwd) = ctx.input(|i| {
+            (
+                i.pointer.button_pressed(egui::PointerButton::Extra1) || (i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft)),
+                i.pointer.button_pressed(egui::PointerButton::Extra2) || (i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)),
+            )
+        });
+        if back {
+            self.go_back();
+        }
+        if fwd {
+            self.go_forward();
+        }
+        // Status bar across the bottom, sidebar full height on the left, top bar over the page.
         self.status_bar(ctx);
         self.sidebar(ctx);
+        self.top_bar(ctx);
         // Each page fades and slides in briefly when it opens.
         let now = ctx.input(|i| i.time);
         if self.page != self.shown_page {
@@ -1762,7 +2050,19 @@ impl eframe::App for App {
                 Page::Wiki => self.page_wiki(ui),
             }
         });
+        if self.page != self.last_page {
+            self.back_stack.push(self.last_page);
+            if self.back_stack.len() > 50 {
+                self.back_stack.remove(0);
+            }
+            self.fwd_stack.clear();
+            self.last_page = self.page;
+        }
+        if self.mode == Mode::Normal {
+            resize_edges(ctx);
+        }
         self.delete_dialog(ctx);
+        self.remove_all_dialog(ctx);
         self.draw_toasts(ctx);
         if self.downloads.iter().any(|d| matches!(d.state, DlState::Running)) || self.thumbs.values().any(|t| matches!(t, Thumb::Loading)) {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

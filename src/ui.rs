@@ -356,6 +356,90 @@ pub fn theme_tile(ui: &mut Ui, th: &Palette, selected: bool) -> egui::Response {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Caption {
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+}
+
+/// Minimise, windowed/maximise and close, drawn by the app (Windows' own buttons are hidden).
+/// Call inside a right-to-left layout.
+pub fn window_controls(ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    let maxed = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+    ui.spacing_mut().item_spacing.x = 0.0;
+    if caption_button(ui, Caption::Close).on_hover_text(t("Schließen", "Close")).clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    let (kind, tip) = if maxed { (Caption::Restore, t("Fenstermodus", "Windowed")) } else { (Caption::Maximize, t("Maximieren", "Maximise")) };
+    if caption_button(ui, kind).on_hover_text(tip).clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maxed));
+    }
+    if caption_button(ui, Caption::Minimize).on_hover_text(t("Minimieren", "Minimise")).clicked() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+    }
+}
+
+fn caption_button(ui: &mut Ui, kind: Caption) -> egui::Response {
+    let p = pal();
+    let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 44.0), Sense::click());
+    let h = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), 0.1);
+    let close = kind == Caption::Close;
+    let fill = if close { Color32::from_rgb(196, 43, 28).gamma_multiply(h) } else { p.secondary.gamma_multiply(h) };
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::ZERO, fill);
+    let col = if close { lerp_color(p.fg, Color32::WHITE, h) } else { p.fg };
+    let s = Stroke::new(1.0f32, col);
+    let c = rect.center();
+    match kind {
+        Caption::Minimize => {
+            painter.line_segment([c - vec2(5.0, 0.0), c + vec2(5.0, 0.0)], s);
+        }
+        Caption::Maximize => {
+            painter.rect_stroke(egui::Rect::from_center_size(c, vec2(10.0, 10.0)), CornerRadius::same(1), s, egui::StrokeKind::Inside);
+        }
+        Caption::Restore => {
+            painter.rect_stroke(egui::Rect::from_center_size(c + vec2(-1.5, 1.5), vec2(8.0, 8.0)), CornerRadius::same(1), s, egui::StrokeKind::Inside);
+            let back = egui::Rect::from_center_size(c + vec2(1.5, -1.5), vec2(8.0, 8.0));
+            painter.line_segment([back.left_top(), back.right_top()], s);
+            painter.line_segment([back.right_top(), back.right_bottom()], s);
+        }
+        Caption::Close => {
+            painter.line_segment([c - vec2(5.0, 5.0), c + vec2(5.0, 5.0)], s);
+            painter.line_segment([c + vec2(-5.0, 5.0), c + vec2(5.0, -5.0)], s);
+        }
+    }
+    resp
+}
+
+/// A settings line: title and explanation on the left, the control on the right.
+pub fn setting_row(ui: &mut Ui, title: &str, desc: &str, control: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_max_width((ui.available_width() - 260.0).max(200.0));
+            ui.label(RichText::new(title).color(pal().fg));
+            if !desc.is_empty() {
+                ui.label(RichText::new(desc).small().color(pal().muted_fg));
+            }
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), control);
+    });
+    ui.add_space(8.0);
+}
+
+/// "vor 5 Min." / "5 min ago" for a Unix time.
+pub fn ago(secs: u64) -> String {
+    let d = crate::library::now().saturating_sub(secs);
+    match d {
+        0..=59 => t("gerade eben", "just now").into(),
+        60..=3599 => crate::tf!("vor {} Min.", "{} min ago", d / 60),
+        3600..=86399 => crate::tf!("vor {} Std.", "{} h ago", d / 3600),
+        _ => crate::tf!("vor {} Tagen", "{} days ago", d / 86400),
+    }
+}
+
 pub fn search_box(ui: &mut Ui, text: &mut String, hint: &str, w: f32) {
     ui.add(egui::TextEdit::singleline(text).hint_text(format!("🔍 {hint}")).desired_width(w).margin(Margin::symmetric(8, 6)));
 }
