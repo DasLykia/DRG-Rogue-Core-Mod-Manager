@@ -1,0 +1,3 @@
+# This PC has no MSVC linker; the GNU toolchain links with its bundled MinGW.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"
